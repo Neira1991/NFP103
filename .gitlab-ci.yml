@@ -1,0 +1,110 @@
+include:
+  - project: "abtasty/cicd/template-ci"
+    file: "/kubernetes/base.gitlab-ci.yml"
+
+.setup_dep2doc:
+  script: &setup_dep2doc
+    - export DATADOC_S3_BUCKET="static-bigquery-cookbook.abtasty.com"
+    - export PATH=${PATH}:/home/gradle/.local/bin
+    - apt-get update
+    - apt-get install python3.9 python3-pip --yes
+    - python3 -m pip install awscli --upgrade
+    - alias aws="python3 -m awscli"
+    - aws --version
+    - AWS_ACCESS_KEY_ID=${DATADOC_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${DATADOC_SECRET_ACCESS_KEY} aws s3 cp s3://${DATADOC_S3_BUCKET}/dep2doc/dep2doc.sh dep2doc.sh
+    - chmod +x dep2doc.sh
+
+variables:
+  BOCD_NAME: "reporting-orchestrator"
+  BOCD_PROVIDER: "gcp"
+  GRADLE_VERSION: "8.8"
+  MAIN_BRANCH: master
+
+services:
+  - name: docker:19.03.0-dind
+
+stages:
+  - build
+  - load-static-libs
+  - store-artifacts
+  - deploy
+  - dep2doc
+
+## CACHE ##
+cache:
+  key: java-dataflows
+  paths:
+    - .gradle/caches
+
+## BUILD ##
+build:
+  stage: build
+  image: gradle:${GRADLE_VERSION}-jdk22
+  script:
+    - gradle build -Pstrict
+  artifacts:
+    paths:
+      - ./build/libs/app.jar
+    expire_in: 1 week
+
+load_libraries_staging:
+  stage: load-static-libs
+  image: eu.gcr.io/production-cicd-240794/blackopscd/kubernetes:latest
+  variables:
+    QUERY_BUILDER_PATH: "gs://production-abtasty-shared-library-europe-west1/library/query-builder/query-builder-latest.so"
+    MANN_WHITNEY_PATH: "gs://production-abtasty-shared-library-europe-west1/library/mann-whitney/mann-whitney-latest.so"
+    THOMSON_SAMPLING_PATH: "gs://production-abtasty-shared-library-europe-west1/library/thompson-sampling/thompson-sampling-latest.so"
+    BAYESIAN_LIB_PATH: "gs://production-abtasty-shared-library-europe-west1/library/libbayesian/libbayesian-latest.so"
+    SEQUENTIAL_TESTING_LIB_PATH: "gs://production-abtasty-shared-library-europe-west1/library/sequential-testing/sequential-testing-latest.so"
+  script:
+    - ./load-go-libs.sh
+  artifacts:
+    paths:
+      - ./*.so
+  only:
+    variables:
+      - $CI_COMMIT_BRANCH == $MAIN_BRANCH
+
+load_libraries_production:
+  stage: load-static-libs
+  image: eu.gcr.io/production-cicd-240794/blackopscd/kubernetes:latest
+  variables:
+    QUERY_BUILDER_PATH: "gs://production-abtasty-shared-library-europe-west1/library/query-builder/query-builder-v2.37.0.so"
+    MANN_WHITNEY_PATH: "gs://production-abtasty-shared-library-europe-west1/library/mann-whitney/mann-whitney-latest.so"
+    THOMSON_SAMPLING_PATH: "gs://production-abtasty-shared-library-europe-west1/library/thompson-sampling/thompson-sampling-latest.so"
+    BAYESIAN_LIB_PATH: "gs://production-abtasty-shared-library-europe-west1/library/libbayesian/libbayesian-latest.so"
+    SEQUENTIAL_TESTING_LIB_PATH: "gs://production-abtasty-shared-library-europe-west1/library/sequential-testing/sequential-testing-v1.3.0.so"
+  script:
+    - ./load-go-libs.sh
+  artifacts:
+    paths:
+      - ./*.so
+  only:
+    - /^[0-9]{1,2}.[0-9]{1,2}.[0-9]{1,2}$/
+  except:
+    - branches
+
+dep2doc-staging:
+  image: gradle:${GRADLE_VERSION}-jdk11
+  stage: dep2doc
+  script:
+    - gradle build -Pstrict
+  after_script:
+    - *setup_dep2doc
+    - ./dep2doc.sh staging java push
+  only:
+    variables:
+      - $CI_COMMIT_BRANCH == $MAIN_BRANCH
+
+dep2doc-production:
+  image: gradle:${GRADLE_VERSION}-jdk11
+  stage: dep2doc
+  script:
+    - gradle build -Pstrict
+  after_script:
+    - *setup_dep2doc
+    - ./dep2doc.sh prod java push
+  only:
+    - /^[0-9]{1,2}.[0-9]{1,2}.[0-9]{1,2}$/
+  except:
+    - branches

@@ -1,0 +1,50 @@
+<configuration>
+
+    <!-- Description of layout tags https://logback.qos.ch/manual/layouts.html -->
+    <variable scope="context" name="basePattern" value="%d{HH:mm:ss.SSS, UTC} |-%highlight(%-5.5level) [%-13.13thread] %-25.25logger{0}"/>
+    <variable scope="context" name="mdcPattern" value="%cyan(%prefix(%X{ctx:-NA} %X{aID:-NA} %X{caID:-NA}))"/>
+
+    <!-- Appender with MDC and KVs for report processing logs -->
+    <appender name="Console" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="ch.qos.logback.core.filter.EvaluatorFilter">
+            <evaluator>
+                <expression>
+                    return mdc == null || mdc.get("aID") == null || mdc.get("caID") == null;
+                </expression>
+            </evaluator>
+            <OnMatch>DENY</OnMatch>
+            <OnMismatch>ACCEPT</OnMismatch>
+        </filter>
+        <encoder>
+            <pattern>${basePattern} - ${mdcPattern} %msg %cyan(%kvp{NONE}) %n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Appender without MDC and KVs for infra and meta-data logs -->
+    <appender name="ConsoleNoMDC" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="ch.qos.logback.core.filter.EvaluatorFilter">
+            <evaluator>
+                <expression>
+                    return mdc == null || mdc.get("aID") == null || mdc.get("caID") == null;
+                </expression>
+            </evaluator>
+            <OnMatch>ACCEPT</OnMatch>
+            <OnMismatch>DENY</OnMismatch>
+        </filter>
+        <encoder>
+            <pattern>${basePattern} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Appears to be the most unstable parts of the service, so we need more precise logging here -->
+    <logger name="io.grpc" level="INFO" />
+    <logger name="com.google.cloud.bigtable" level="WARN" />
+
+    <variable name="LOG_LEVEL" value="${LOG_LEVEL:-INFO}" />
+    <root level="${LOG_LEVEL}">
+        <!-- We need two different layout patterns to avoid polluting messages when MDC data is not available.
+        For this purpose we use two appenders. They have the opposite filters, so should never duplicate each other -->
+        <appender-ref ref="Console"/>
+        <appender-ref ref="ConsoleNoMDC"/>
+    </root>
+</configuration>
